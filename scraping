@@ -1,0 +1,123 @@
+from urllib.parse import urljoin
+import requests
+import pandas as pd
+import time
+
+base_url = "https://bina.az"
+
+headers_graphql = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0",
+    "x-platform": "mobile"
+}
+
+offset = 0
+data_list = []
+
+while True:
+    url = "https://bina.az/graphql"
+    
+    payload = {
+        "operationName": "FeaturedItemsRow",
+        "variables": {"limit": 24, "offset": offset},
+        "extensions": {
+            "persistedQuery": {
+                "version": 1,
+                "sha256Hash": "f34b27afebc725b2bb62b62f9757e1740beaf2dc162f4194e29ba5a608b3cb41"
+            }
+        }
+    }
+
+    r = requests.post(url, headers=headers_graphql, json=payload)
+    json_data = r.json()
+
+    items = json_data.get("data", {}).get("items", [])
+    if not items:
+        print("The last page reached.")
+        break
+
+    for item in items:
+        location = item.get("location")
+        item_id = item.get("id")
+
+        
+        try:
+            phone_url = f"https://bina.az/items/{item_id}/phones"
+            headers_phone = {
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"https://bina.az/items/{item_id}"
+            }
+            res = requests.get(phone_url, headers=headers_phone, timeout=10)
+            res.raise_for_status()
+            phone_numbers = res.json().get("phones", [])
+        except:
+            phone_numbers = []
+
+       
+        sale_type_raw = item.get("saleType")
+        if sale_type_raw == "rent":
+            sale_type = "Kirayə"
+        elif sale_type_raw == "sale":
+            sale_type = "Satış"
+        else:
+            sale_type = "Satış/Kirayə"  # default dəyər
+
+        building_type = item.get("buildingType") or "Əmlak"
+        rooms = item.get("rooms")
+        area = item.get("area", {}).get("value")
+
+        district = location.get("parent", {}).get("name") if location and location.get("parent") else "Naməlum rayon"
+        metro = item.get("metroStation", {}).get("name") if item.get("metroStation") else "Yoxdur"
+        has_deed = "Bəli" if item.get("hasDeed") else "Xeyr"
+        repair_status = item.get("repair") if item.get("repair") else "Naməlum"
+        created_at = item.get("createdAt") if item.get("createdAt") else "Naməlum"
+
+       
+        title_parts = [
+            f"{sale_type} üçün {building_type}",
+            f"{rooms} otaqlı" if rooms else None,
+            f"{area} m²" if area else None,
+            district,
+            f"({metro})" if metro else None
+        ]
+        title = " – ".join([p for p in title_parts if p])
+
+        # ---------------- DATA APPEND ----------------
+        data_list.append({
+            "id": item_id,
+            "title": title,
+            "sale_type": sale_type,
+            "building_type": building_type,
+            "price": item.get("price", {}).get("value"),
+            "currency": item.get("price", {}).get("currency"),
+            "area": area,
+            "price_per_sqm": (
+                item.get("price", {}).get("value") / area
+                if item.get("price") and area else None
+            ),
+            "rooms": rooms,
+            "floor": item.get("floor") if item.get("floor") is not None else 0,
+            "total_floors": item.get("floors") if item.get("floors") is not None else 0,
+            "repair_status": repair_status,
+            "has_deed": has_deed,
+            "metro": metro,
+            "district": district,
+            "location": location.get("fullName") if location else "Naməlum",
+            "created_at": created_at,
+            "company": item.get("company", {}).get("name") or "Naməlum",
+            "url": urljoin(base_url, f"/items/{item_id}"),
+            "phone_number": phone_numbers
+        })
+
+        time.sleep(0.3)
+
+    print(f"Offset {offset} done, {len(items)} items loaded.")
+    offset += 24
+
+df = pd.DataFrame(data_list)
+print(df.head())
+
+# ---------------- SAVE TO EXCEL ----------------
+df.to_excel("bina_az_analysis_ready.xlsx", index=False)
